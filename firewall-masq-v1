@@ -1,0 +1,123 @@
+#!/bin/sh
+
+IPT=iptables
+
+INT_WAN=ppp0
+
+INT_SWITCH=enp4s0
+NET_SWITCH=192.168.100.0/24
+
+INT_WIFI=enp1s5
+NET_WIFI=192.168.200.0/24
+
+## ======================================================================================================
+
+## Очищаем все правила
+
+## Сбрасываем политики по-умолчанию
+
+$IPT -P INPUT ACCEPT
+$IPT -P FORWARD ACCEPT
+$IPT -P OUTPUT ACCEPT
+$IPT -t nat -P PREROUTING ACCEPT
+$IPT -t nat -P POSTROUTING ACCEPT
+$IPT -t nat -P OUTPUT ACCEPT
+$IPT -t mangle -P PREROUTING ACCEPT
+$IPT -t mangle -P OUTPUT ACCEPT
+
+## Сбрасываем правила
+
+$IPT -F
+$IPT -t nat -F
+$IPT -t mangle -F
+
+## Сбрасываем не стандартные цепочки
+
+$IPT -X
+$IPT -t nat -X
+$IPT -t mangle -X
+
+## ======================================================================================================
+
+# Блокируем всё, по-умолчанию
+$IPT -P INPUT   DROP
+$IPT -P FORWARD DROP
+$IPT -P OUTPUT  DROP
+
+## ======================================================================================================
+
+# супер хрень без которой с pppoe все печально, подробнее тут
+# http://www.opennet.ru/base/net/pppoe_mtu.txt.html
+# по-умолчанию эта строка есть в /etc/ppp/if-up.d/0clampmss
+# но т.к. все правила выше чистятся, то она не работает и надо прописывать тут
+$IPT -t mangle -o "$INT_WAN" --insert FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1400:65495 -j TCPMSS --clamp-mss-to-pmtu
+
+## ======================================================================================================
+
+# Разраешаем любой loopback трафик
+$IPT -A INPUT -i lo -j ACCEPT
+$IPT -A OUTPUT -o lo -j ACCEPT
+
+# Разраешаем транзитные пакеты между интерфейсами локалки
+$IPT -A FORWARD -i $INT_SWITCH -o $INT_WIFI -j ACCEPT
+$IPT -A FORWARD -i $INT_WIFI -o $INT_SWITCH -j ACCEPT
+
+# Разраешаем трафик на интерфейсах локалки
+$IPT -A INPUT -i $INT_SWITCH -j ACCEPT
+$IPT -A OUTPUT -o $INT_SWITCH -j ACCEPT
+$IPT -A INPUT -i $INT_WIFI -j ACCEPT
+$IPT -A OUTPUT -o $INT_WIFI -j ACCEPT
+
+# Разрешаем любой исходящий в WAN трафик
+$IPT -A OUTPUT -o $INT_WAN -j ACCEPT
+
+# Разрешаем входящий из WAN трафик для установленных соединений
+$IPT -A INPUT -i $INT_WAN -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+# Разрешаем входящий из WAN трафик для веб-сервера
+$IPT -A INPUT -p tcp -i $INT_WAN -m multiport --dports=80,443 -m state --state NEW -j ACCEPT
+
+## ======================================================================================================
+
+## -- Раздаем инет ------------------------------------------------------------
+
+# добавляем маскарадинг из локалки в wan
+$IPT -t nat -A POSTROUTING -o $INT_WAN -s $NET_WIFI -j MASQUERADE
+$IPT -t nat -A POSTROUTING -o $INT_WAN -s $NET_SWITCH -j MASQUERADE
+
+# разрешаем транзитные пакеты из LAN в WAN
+$IPT -A FORWARD -i $INT_WIFI -o $INT_WAN -j ACCEPT
+$IPT -A FORWARD -i $INT_SWITCH -o $INT_WAN -j ACCEPT
+
+# разрешаем транзитные пакеты для установленых соединений(ответы) из WAN в LAN
+$IPT -A FORWARD -i $INT_WAN -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+# ======================================================================================================
+
+# Enable forwarding
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# no IP spoofing
+if [ -e /proc/sys/net/ipv4/conf/all/rp_filter ] ; then
+   for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
+      echo 1 > $i
+   done
+fi
+
+# Disable Source Routed Packets
+for i in /proc/sys/net/ipv4/conf/*/accept_source_route; do
+   echo 0 > $i
+done
+
+# ======================================================================================================
+
+# -- Добавляем инфо по дропнутым пакетам в syslog -----------------------------
+
+#$IPT -A FORWARD  -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT FORWARD drop: '
+#$IPT -A FORWARD  -j DROP
+
+#$IPT -A INPUT  -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT INPUT drop: '
+#$IPT -A INPUT  -j DROP
+
+#$IPT -A OUTPUT -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT OUTPUT drop: '
+#$IPT -A OUTPUT -j DROP
