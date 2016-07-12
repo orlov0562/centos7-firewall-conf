@@ -10,7 +10,7 @@
 - http://www.k-max.name/linux/netfilter-iptables-v-linux/
 - https://en.wikipedia.org/wiki/List_of_TCP_and_UDP_port_numbers
 
-# Схема маршрутиризации
+# Схема маршрутизации
 
 ![](https://github.com/orlov0562/centos7-firewall-conf/blob/master/Netfilter-tables.jpg?raw=true)
 
