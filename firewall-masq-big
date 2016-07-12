@@ -1,0 +1,252 @@
+#!/bin/sh
+
+IPT=iptables
+
+INT_WAN=ppp0
+
+INT_SWITCH=enp4s0
+GW_SWITCH=192.168.100.1
+NET_SWITCH=192.168.100.0/24
+
+INT_WIFI=enp1s5
+GW_WIFI=192.168.200.1
+NET_WIFI=192.168.200.0/24
+
+## ======================================================================================================
+
+## Очищаем все правила
+
+## Сбрасываем политики по-умолчанию
+
+$IPT -P INPUT ACCEPT
+$IPT -P FORWARD ACCEPT
+$IPT -P OUTPUT ACCEPT
+$IPT -t nat -P PREROUTING ACCEPT
+$IPT -t nat -P POSTROUTING ACCEPT
+$IPT -t nat -P OUTPUT ACCEPT
+$IPT -t mangle -P PREROUTING ACCEPT
+$IPT -t mangle -P OUTPUT ACCEPT
+
+## Сбрасываем правила
+
+$IPT -F
+$IPT -t nat -F
+$IPT -t mangle -F
+
+## Сбрасываем не стандартные цепочки
+
+$IPT -X
+$IPT -t nat -X
+$IPT -t mangle -X
+
+## ======================================================================================================
+
+# Блокируем всё, по-умолчанию
+$IPT -P INPUT   DROP
+$IPT -P FORWARD DROP
+$IPT -P OUTPUT  DROP
+
+## ======================================================================================================
+
+# супер хрень без которой с pppoe все печально, подробнее тут
+# http://www.opennet.ru/base/net/pppoe_mtu.txt.html
+# по-умолчанию эта строка есть в /etc/ppp/if-up.d/0clampmss
+# но т.к. все правила выше чистятся, то она не работает и надо прописывать тут
+$IPT -t mangle -o "$INT_WAN" --insert FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1400:65495 -j TCPMSS --clamp-mss-to-pmtu
+
+## -- Разрешаем SSH -----------------------------------------------------------
+
+# входящие ( GATE 22 <- WAN:22 )
+$IPT -A INPUT  -p tcp --dport 22 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p tcp --sport 22 -m state --state ESTABLISHED     -j ACCEPT
+
+# исходящие ( GATE -> WAN:22 )
+$IPT -A OUTPUT -p tcp --dport 22 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A INPUT  -p tcp --sport 22 -m state --state ESTABLISHED     -j ACCEPT
+
+## -- Разрешаем DNS -----------------------------------------------------------
+
+# Gate ( GATE -> WAN:53 )
+$IPT -A INPUT  -p tcp -i $INT_WAN --sport 53 -m state --state ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_WAN --dport 53 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A INPUT  -p udp -i $INT_WAN --sport 53 -m state --state ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p udp -o $INT_WAN --dport 53 -m state --state NEW,ESTABLISHED -j ACCEPT
+
+# WiFi (GATE:53 <- LAN )
+$IPT -A INPUT  -p tcp -i $INT_WIFI --dport 53 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_WIFI --sport 53 -m state --state ESTABLISHED -j ACCEPT
+$IPT -A INPUT  -p udp -i $INT_WIFI --dport 53 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p udp -o $INT_WIFI --sport 53 -m state --state ESTABLISHED -j ACCEPT
+
+# SWITCH (GATE:53 <- LAN )
+$IPT -A INPUT  -p tcp -i $INT_SWITCH --dport 53 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_SWITCH --sport 53 -m state --state ESTABLISHED -j ACCEPT
+$IPT -A INPUT  -p udp -i $INT_SWITCH --dport 53 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p udp -o $INT_SWITCH --sport 53 -m state --state ESTABLISHED -j ACCEPT
+
+## -- Разрешаем DHCP  -----------------------------------------------------------
+
+# SWITCH  (GATE:67,68 <-> LAN )
+$IPT -A INPUT  -p udp -i $INT_SWITCH -m multiport --dports 67,68 -j ACCEPT
+$IPT -A OUTPUT -p udp -o $INT_SWITCH -m multiport --sports 67,68 -j ACCEPT
+
+# WIFI (GATE:67,68 <- LAN )
+$IPT -A INPUT  -p udp -i $INT_WIFI -m multiport --dports 67,68 -j ACCEPT
+$IPT -A OUTPUT -p udp -o $INT_WIFI -m multiport --sports 67,68 -j ACCEPT
+
+## -- Разрешаем FTP (GATE -> WAN:21)  ------------------------------------------
+
+# inbound ftp connections
+$IPT -A OUTPUT -p tcp -o $INT_WAN --dport 21 -j ACCEPT
+$IPT -A INPUT -p tcp -i $INT_WAN --sport 21 -m state --state ESTABLISHED -j ACCEPT
+
+# active ftp connections
+$IPT -A OUTPUT -p tcp -o $INT_WAN --dport 20 -m state --state ESTABLISHED -j ACCEPT
+$IPT -A INPUT -p tcp -i $INT_WAN --sport 20 -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+# passive ftp connections
+$IPT -A OUTPUT -p tcp -o $INT_WAN --sport 1024: --dport 1024: -m state --state ESTABLISHED,RELATED,NEW -j ACCEPT
+$IPT -A INPUT -p tcp -i $INT_WAN --sport 1024: --dport 1024: -m state --state ESTABLISHED -j ACCEPT
+
+## -- Разрешаем FTP внутри LAN (GATE:21 -> LAN:21)  ------------------------------------------
+
+# inbound ftp connections
+$IPT -A INPUT -p tcp -i  $INT_SWITCH --dport 21  -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_SWITCH --sport 21 -m state --state ESTABLISHED -j ACCEPT
+
+# active ftp connections
+$IPT -A INPUT -p tcp -i $INT_SWITCH --dport 20 -m state --state ESTABLISHED,RELATED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_SWITCH --sport 20 -m state --state ESTABLISHED -j ACCEPT
+
+# passive ftp connections
+$IPT -A INPUT -p tcp -i $INT_SWITCH --sport 1024: --dport 1024: -m state --state ESTABLISHED,RELATED,NEW -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_SWITCH --sport 1024: --dport 1024: -m state --state ESTABLISHED -j ACCEPT
+
+# inbound ftp connections
+$IPT -A INPUT -p tcp -i  $INT_WIFI --dport 21  -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_WIFI --sport 21 -m state --state ESTABLISHED -j ACCEPT
+
+# active ftp connections
+$IPT -A INPUT -p tcp -i $INT_WIFI --dport 20 -m state --state ESTABLISHED,RELATED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_WIFI --sport 20 -m state --state ESTABLISHED -j ACCEPT
+
+# passive ftp connections
+$IPT -A INPUT -p tcp -i $INT_WIFI --sport 1024: --dport 1024: -m state --state ESTABLISHED,RELATED,NEW -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_WIFI --sport 1024: --dport 1024: -m state --state ESTABLISHED -j ACCEPT
+
+## -- Разрешаем HTTP, HTTPS (GATE -> WAN:80,443 ) ------------------------------
+
+$IPT -A INPUT  -p tcp -i $INT_WAN -m multiport --sports 80,443 -m state --state ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_WAN -m multiport --dports 80,443 -m state --state NEW,ESTABLISHED -j ACCEPT
+
+## -- Разрешаем HTTP для веб сервера (GATE:80 <- WAN ) -------------------------
+
+$IPT -A INPUT  -p tcp -i $INT_WAN --dport 80 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_WAN --sport 80 -m state --state ESTABLISHED -j ACCEPT
+
+$IPT -A INPUT  -p tcp -i $INT_SWITCH --dport 80 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_SWITCH --sport 80 -m state --state ESTABLISHED -j ACCEPT
+
+$IPT -A INPUT  -p tcp -i $INT_WIFI --dport 80 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_WIFI --sport 80 -m state --state ESTABLISHED -j ACCEPT
+
+## -- Разрешаем NTP трафик (GATE -> WAN:123 ) ------------------------------
+
+$IPT -A INPUT  -p udp -i $INT_WAN --sport 123 -m state --state ESTABLISHED,RELATED -j ACCEPT
+$IPT -A OUTPUT -p udp -o $INT_WAN --dport 123 -m state --state NEW,ESTABLISHED -j ACCEPT
+
+## -- Разрешаем LanSync Dropbox трафик (SWITCH:17500 <-> WIFI:17500, TCP,UDP ) ------------------------------
+
+# SWITCH
+$IPT -A INPUT  -p tcp -i $INT_SWITCH --sport 17500 -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_SWITCH --dport 17500 -j ACCEPT
+$IPT -A INPUT  -p udp -i $INT_SWITCH --sport 17500 -j ACCEPT
+$IPT -A OUTPUT -p udp -o $INT_SWITCH --dport 17500 -j ACCEPT
+
+#WIFI
+$IPT -A INPUT  -p tcp -i $INT_WIFI --sport 17500 -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_WIFI --dport 17500 -j ACCEPT
+$IPT -A INPUT  -p udp -i $INT_WIFI --sport 17500 -j ACCEPT
+$IPT -A OUTPUT -p udp -o $INT_WIFI --dport 17500 -j ACCEPT
+
+## -- Разрешаем Samba внутри LAN (SWITCH:137,138,139,445 <-> WIFI:137,138,139,445, TCP,UDP ) ----------------
+
+#SWITCH
+$IPT -A INPUT  -p tcp -i $INT_SWITCH -m multiport --dports 137,138,139,445 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_SWITCH -m multiport --sports 137,138,139,445 -m state --state ESTABLISHED -j ACCEPT
+$IPT -A INPUT  -p udp -i $INT_SWITCH -m multiport --dports 137,138,139,445 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p udp -o $INT_SWITCH -m multiport --sports 137,138,139,445 -m state --state ESTABLISHED -j ACCEPT
+
+#WIFI
+$IPT -A INPUT  -p tcp -i $INT_WIFI -m multiport --dports 137,138,139,445 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p tcp -o $INT_WIFI -m multiport --sports 137,138,139,445 -m state --state ESTABLISHED,RELATED -j ACCEPT
+$IPT -A INPUT  -p udp -i $INT_WIFI -m multiport --dports 137,138,139,445 -m state --state NEW,ESTABLISHED -j ACCEPT
+$IPT -A OUTPUT -p udp -o $INT_WIFI -m multiport --sports 137,138,139,445 -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+## -- Разрешаем любой трафик между внутренними (LAN) интерфейсами----------------
+
+$IPT -A FORWARD -p tcp -i $INT_SWITCH -o $INT_WIFI -j ACCEPT
+$IPT -A FORWARD -p tcp -i $INT_WIFI -o $INT_SWITCH -j ACCEPT
+
+## -- Разрешаем loopback --------------------------------------------------------
+
+$IPT -A INPUT -i lo -j ACCEPT
+$IPT -A OUTPUT -o lo -j ACCEPT
+
+## -- Разрешаем установленные соединения
+
+$IPT -A FORWARD -i $INT_WAN -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+## -- Разрешаем пинги (GATE -> WAN) ---------------------------------------------
+
+$IPT -A OUTPUT -p icmp -m state --state NEW,ESTABLISHED,RELATED -j ACCEPT
+$IPT -A INPUT  -p icmp -m state --state ESTABLISHED,RELATED     -j ACCEPT
+
+## -- Разрешаем входящие пинги из LAN ---------------------------------------------------------
+
+$IPT -A INPUT -p icmp -i $INT_SWITCH -m state --state NEW -j ACCEPT
+$IPT -A INPUT -p icmp -i $INT_WIFI -m state --state NEW -j ACCEPT
+
+## ======================================================================================================
+
+## -- Раздаем инет ------------------------------------------------------------
+
+# добавляем маскарадинг из локалки в wan
+
+$IPT -t nat -A POSTROUTING -o $INT_WAN -s $NET_WIFI -j MASQUERADE
+$IPT -t nat -A POSTROUTING -o $INT_WAN -s $NET_SWITCH -j MASQUERADE
+
+# разрешаем движение пакетам в обратном направлении из wan в локалку
+
+$IPT -A FORWARD -i $INT_WIFI -o $INT_WAN -j ACCEPT
+$IPT -A FORWARD -i $INT_SWITCH -o $INT_WAN -j ACCEPT
+
+# ======================================================================================================
+
+# Enable forwarding
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# no IP spoofing
+if [ -e /proc/sys/net/ipv4/conf/all/rp_filter ] ; then
+   for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
+      echo 1 > $i
+   done
+fi
+
+# Disable Source Routed Packets
+for i in /proc/sys/net/ipv4/conf/*/accept_source_route; do
+   echo 0 > $i
+done
+
+# ======================================================================================================
+
+# -- Добавляем инфо по дропнутым пакетам в syslog -----------------------------
+
+#$IPT -A FORWARD  -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT FORWARD drop: '
+#$IPT -A FORWARD  -j DROP
+
+#$IPT -A INPUT  -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT INPUT drop: '
+#$IPT -A INPUT  -j DROP
+
+#$IPT -A OUTPUT -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT OUTPUT drop: '
+#$IPT -A OUTPUT -j DROP
