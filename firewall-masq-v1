@@ -134,11 +134,22 @@ done
 
 # -- Добавляем инфо по дропнутым пакетам в syslog -----------------------------
 
-#$IPT -A FORWARD  -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT FORWARD drop: '
-#$IPT -A FORWARD  -j DROP
+LOGGING="no"
 
-#$IPT -A INPUT  -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT INPUT drop: '
-#$IPT -A INPUT  -j DROP
+if [ $LOGGING == "yes" ] ; then
+    
+    $IPT -t nat -I PREROUTING -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT PREROUTING drop: '
+    $IPT -t nat -I POSTROUTING -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT POSTROUTING drop: '
 
-#$IPT -A OUTPUT -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT OUTPUT drop: '
-#$IPT -A OUTPUT -j DROP
+    $IPT -A FORWARD  -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT FORWARD drop: '
+    $IPT -A FORWARD  -j DROP
+
+    $IPT -A INPUT  -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT INPUT drop: '
+    $IPT -A INPUT  -j DROP
+
+    $IPT -A OUTPUT -j LOG  -m limit --limit 12/min --log-level 4 --log-prefix 'IPT OUTPUT drop: '
+    $IPT -A OUTPUT -j DROP
+
+fi
+
+
