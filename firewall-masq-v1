@@ -78,6 +78,27 @@ $IPT -A INPUT -i $INT_WAN -m state --state ESTABLISHED,RELATED -j ACCEPT
 $IPT -A INPUT -p tcp -i $INT_WAN -m multiport --dports=80,443 -m state --state NEW -j ACCEPT
 
 ## ======================================================================================================
+## -- Форвардинг в виртуальную машину ------------------------------------------------------------
+
+VM_WAN_PORT=10080
+VM_PORT=22
+VM_IP="192.168.100.88"
+VM_GATE_IP="192.168.100.1"
+
+# Разрешаем входящий из WAN трафик
+$IPT -A INPUT -p tcp -i $INT_WAN -m multiport --dports=$VM_WAN_PORT -m state --state NEW -j ACCEPT
+
+# Пробрасываем входящие пакеты в виртуалку
+$IPT -t nat -A PREROUTING  -p tcp -i $INT_WAN  --dport $VM_WAN_PORT -j DNAT --to-destination $VM_IP:$VM_PORT
+
+# Разрешаем транзитные пакеты из WAN на виртуалку
+$IPT -A FORWARD -i $INT_WAN -d $VM_IP -j ACCEPT
+
+# Пробрасываем порт
+$IPT -t nat -A POSTROUTING -p tcp --dst $VM_IP --dport $VM_PORT     -j SNAT --to-source $VM_GATE_IP
+$IPT -t nat -A OUTPUT      -p tcp -o $INT_WAN  --dport $VM_WAN_PORT -j DNAT --to-destination $VM_IP:$VM_PORT
+
+## ======================================================================================================
 
 ## -- Раздаем инет ------------------------------------------------------------
 
